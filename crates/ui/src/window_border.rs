@@ -27,6 +27,7 @@ pub fn window_border() -> WindowBorder {
 pub struct WindowBorder {
     shadow_size: Pixels,
     resize_hit_size: Pixels,
+    disabled: bool,
     children: Vec<AnyElement>,
 }
 
@@ -35,6 +36,7 @@ impl Default for WindowBorder {
         Self {
             shadow_size: SHADOW_SIZE,
             resize_hit_size: RESIZE_HIT_SIZE,
+            disabled: false,
             children: Vec::new(),
         }
     }
@@ -58,6 +60,17 @@ impl WindowBorder {
     /// Default: [`RESIZE_HIT_SIZE`]
     pub fn resize_hit_size(mut self, size: impl Into<Pixels>) -> Self {
         self.resize_hit_size = size.into();
+        self
+    }
+
+    /// Disable the window border entirely, for applications that draw their
+    /// own client-side decorations: no shadow padding, frame border, shadow,
+    /// resize hit zones, or client-inset writes — as if the window were
+    /// server-decorated.
+    ///
+    /// Default: `false`
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
         self
     }
 }
@@ -97,7 +110,12 @@ impl ParentElement for WindowBorder {
 
 impl RenderOnce for WindowBorder {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let decorations = window.window_decorations();
+        let decorations = match window.window_decorations() {
+            // The Server arm renders nothing and writes no client inset, so
+            // it is exactly the no-op that `disabled` promises.
+            Decorations::Client { .. } if self.disabled => Decorations::Server,
+            decorations => decorations,
+        };
         // Keep the platform client inset stable. When the window is tiled on all sides we stop drawing
         // shadow padding, but `set_client_inset` must still use the full shadow size. Clearing it
         // makes the first resize after restore double-count the shadow in `compute_outer_size`, and
@@ -176,7 +194,11 @@ impl RenderOnce for WindowBorder {
                             .when(!tiling.bottom, |div| div.border_b(BORDER_SIZE))
                             .when(!tiling.left, |div| div.border_l(BORDER_SIZE))
                             .when(!tiling.right, |div| div.border_r(BORDER_SIZE))
-                            .when(!tiling.is_tiled(), |div| {
+                            // A zero-size shadow must paint nothing: with
+                            // `blur_radius` 0 the full-surface BoxShadow
+                            // otherwise renders as an opaque 0.3-alpha veil
+                            // across the whole window.
+                            .when(!tiling.is_tiled() && visual_shadow > px(0.), |div| {
                                 div.shadow(vec![gpui::BoxShadow {
                                     color: Hsla {
                                         h: 0.,

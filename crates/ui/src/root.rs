@@ -44,6 +44,7 @@ pub struct Root {
     pub(crate) tooltip_overlay: Entity<TooltipOverlay>,
     sheet_size: Option<DefiniteLength>,
     window_shadow_size: Pixels,
+    window_border_disabled: bool,
     /// The focus handle that will be restored after a dialog is closed with animation.
     /// Used to handle rapid dialog opening/closing to maintain correct focus chain.
     pending_focus_restore: Option<WeakFocusHandle>,
@@ -97,6 +98,7 @@ impl Root {
             tooltip_overlay: cx.new(|_| TooltipOverlay::new()),
             sheet_size: None,
             window_shadow_size: window_border::SHADOW_SIZE,
+            window_border_disabled: false,
             pending_focus_restore: None,
             text_selection: WindowTextSelection::default(),
             selectable_text_views: HashMap::new(),
@@ -108,6 +110,17 @@ impl Root {
     /// Default: [`window_border::SHADOW_SIZE`]
     pub fn window_shadow_size(mut self, size: impl Into<Pixels>) -> Self {
         self.window_shadow_size = size.into();
+        self
+    }
+
+    /// Disable the built-in Linux client-side decorations entirely (no
+    /// shadow padding, frame border, shadow, resize hit zones, or
+    /// client-inset writes), for applications that draw their own. See
+    /// [`WindowBorder::disabled`](window_border::WindowBorder::disabled).
+    ///
+    /// Default: `false`
+    pub fn window_border_disabled(mut self, disabled: bool) -> Self {
+        self.window_border_disabled = disabled;
         self
     }
 
@@ -513,22 +526,25 @@ impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.set_rem_size(cx.theme().font_size);
 
-        window_border().shadow_size(self.window_shadow_size).child(
-            div()
-                .id("root")
-                .key_context(CONTEXT)
-                .on_action(cx.listener(Self::on_action_tab))
-                .on_action(cx.listener(Self::on_action_tab_prev))
-                .on_action(cx.listener(Self::on_action_copy))
-                .relative()
-                .size_full()
-                .font_family(cx.theme().font_family.clone())
-                .bg(cx.theme().background)
-                .text_color(cx.theme().foreground)
-                .refine_style(&self.style)
-                .child(TextSelectionController)
-                .child(self.view.clone())
-                .child(self.tooltip_overlay.clone()),
-        )
+        window_border()
+            .shadow_size(self.window_shadow_size)
+            .disabled(self.window_border_disabled)
+            .child(
+                div()
+                    .id("root")
+                    .key_context(CONTEXT)
+                    .on_action(cx.listener(Self::on_action_tab))
+                    .on_action(cx.listener(Self::on_action_tab_prev))
+                    .on_action(cx.listener(Self::on_action_copy))
+                    .relative()
+                    .size_full()
+                    .font_family(cx.theme().font_family.clone())
+                    .bg(cx.theme().background)
+                    .text_color(cx.theme().foreground)
+                    .refine_style(&self.style)
+                    .child(TextSelectionController)
+                    .child(self.view.clone())
+                    .child(self.tooltip_overlay.clone()),
+            )
     }
 }

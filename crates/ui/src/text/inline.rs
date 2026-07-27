@@ -143,44 +143,14 @@ impl Inline {
         // Use for debug selection bounds
         // self.paint_selected_bounds(Bounds::from_corners(selection_start, selection_end), window, cx);
 
-        let mut selection: Option<Selection> = None;
-        let mut offset = 0;
-        let mut chars = self.text.chars().peekable();
-        while let Some(c) = chars.next() {
-            let Some(pos) = text_layout.position_for_index(offset) else {
-                offset += c.len_utf8();
-                continue;
-            };
-
-            let mut char_width = line_height.half();
-            if let Some(next_pos) = text_layout.position_for_index(offset + 1) {
-                if next_pos.y == pos.y {
-                    char_width = next_pos.x - pos.x;
-                }
-            }
-
-            let char_center = point(pos.x + char_width.half(), pos.y + line_height.half());
-            if mask_bounds.contains(&char_center)
-                && point_in_text_selection(
-                    pos,
-                    char_width,
-                    selection_start,
-                    selection_end,
-                    line_height,
-                )
-            {
-                if selection.is_none() {
-                    selection = Some((offset..offset).into());
-                }
-
-                let next_offset = offset + c.len_utf8();
-                if let Some(selection) = selection.as_mut() {
-                    selection.end = next_offset;
-                }
-            }
-
-            offset += c.len_utf8();
-        }
+        let selection = scan_selection(
+            text_layout,
+            &self.text,
+            selection_start,
+            selection_end,
+            line_height,
+            mask_bounds,
+        );
 
         (true, true, selection)
     }
@@ -461,6 +431,190 @@ impl Element for Inline {
                     }
                 }
             });
+        }
+    }
+}
+
+/// The byte range of `text` covered by the window selection, clipped to the
+/// content mask.
+///
+/// Semantically identical to testing every character of `text` with
+/// [`point_in_text_selection`] plus `mask_bounds.contains(char_center)` and
+/// taking the hull of the hits — which is exactly what this used to do, one
+/// [`TextLayout::position_for_index`] call per character. That call rescans
+/// the layout from line 0, so the old loop cost O(characters x lines) *per
+/// paint*, and it ran on every frame while a selection existed: a 46 KB
+/// payload in one `Inline` (the raw request/response bodies in Eidola's
+/// Record window) spent ~480 ms per frame in this function.
+///
+/// Two structural changes remove that cost without changing the result:
+///
+/// 1. **Skip whole lines.** A character's hit test depends only on its
+///    position, and every character of a laid-out line sits inside that
+///    line's vertical band. A line whose band misses either the selection's
+///    y-span or the content mask cannot contribute a hit, so it is skipped
+///    without touching its characters. Because the content mask is the
+///    visible viewport, this bounds the scan to the text on screen.
+/// 2. **Walk glyphs once per scanned line.** Within a scanned line the
+///    per-character positions come from a single ordered pass over the
+///    shaped glyphs (character offsets only ever increase), instead of a
+///    layout-wide `position_for_index` call per character.
+///
+/// The per-character predicate itself is unchanged.
+fn scan_selection(
+    text_layout: &TextLayout,
+    text: &str,
+    selection_start: Point<Pixels>,
+    selection_end: Point<Pixels>,
+    line_height: Pixels,
+    mask_bounds: Bounds<Pixels>,
+) -> Option<Selection> {
+    let lines = text_layout.line_layouts();
+    let origin = text_layout.bounds().origin;
+    // Geometry uses the *layout's* line height (pixel-snapped when the layout
+    // was measured), exactly as `TextLayout::position_for_index` does; the
+    // hit test below uses the window's, exactly as the old loop did. They can
+    // differ by a device pixel, which is enough to shift a hit.
+    let layout_line_height = text_layout.line_height();
+    let sel_top = selection_start.y.min(selection_end.y);
+    let sel_bottom = selection_start.y.max(selection_end.y);
+    // Slack that makes the per-line filter a guaranteed superset of the hits.
+    let slack = line_height.max(layout_line_height);
+
+    let mut selection: Option<Selection> = None;
+    let mut line_origin_y = origin.y;
+    let mut line_start_ix = 0usize;
+
+    for line in lines.iter() {
+        let line_bottom = line_origin_y + line.size(layout_line_height).height;
+        // Positions on this line have `pos.y` in
+        // `[line_origin_y, line_bottom - layout_line_height]`.
+        // `point_in_text_selection` needs `pos.y + line_height > sel_top &&
+        // pos.y <= sel_bottom`; the mask test is on `pos.y + line_height / 2`.
+        // Both are widened by `slack` here — an over-inclusive line is merely
+        // scanned, never a different answer.
+        let in_selection_band = line_bottom + slack >= sel_top && line_origin_y <= sel_bottom;
+        let in_mask_band = line_bottom + slack >= mask_bounds.top()
+            && line_origin_y <= mask_bounds.bottom() + slack;
+        if in_selection_band && in_mask_band {
+            scan_line(
+                text,
+                line,
+                line_start_ix,
+                point(origin.x, line_origin_y),
+                selection_start,
+                selection_end,
+                line_height,
+                layout_line_height,
+                mask_bounds,
+                &mut selection,
+            );
+        }
+        line_origin_y = line_bottom;
+        line_start_ix += line.len() + 1;
+    }
+
+    selection
+}
+
+/// Run the per-character selection test over one laid-out line, extending
+/// `selection` with any hits.
+///
+/// `line_start_ix` is the line's byte offset in the whole text and
+/// `line_origin` its top-left corner. Character positions are reproduced
+/// exactly as [`TextLayout::position_for_index`] would report them: the x of
+/// the first glyph at or after the byte index (or the line width past the
+/// last glyph), relative to the start of the wrapped sub-line the index falls
+/// on, and a y of `sub_line_index * line_height`.
+#[allow(clippy::too_many_arguments)]
+fn scan_line(
+    text: &str,
+    line: &gpui::WrappedLineLayout,
+    line_start_ix: usize,
+    line_origin: Point<Pixels>,
+    selection_start: Point<Pixels>,
+    selection_end: Point<Pixels>,
+    line_height: Pixels,
+    layout_line_height: Pixels,
+    mask_bounds: Bounds<Pixels>,
+    selection: &mut Option<Selection>,
+) {
+    let len = line.len();
+    // Glyph (byte index, x) pairs in reading order, and the exclusive end of
+    // each wrapped sub-line — the two things `x_for_index` / the sub-line walk
+    // in `WrappedLineLayout::position_for_index` consult.
+    let glyphs: Vec<(usize, Pixels)> = line
+        .runs()
+        .iter()
+        .flat_map(|run| run.glyphs.iter())
+        .map(|glyph| (glyph.index, glyph.position.x))
+        .collect();
+    let width = line.unwrapped_layout.width;
+    let sub_ends: Vec<usize> = line
+        .wrap_boundaries()
+        .iter()
+        .map(|boundary| line.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index)
+        .chain([len])
+        .collect();
+
+    // `LineLayout::x_for_index`, answered with a cursor instead of a scan: all
+    // three query streams below (`i`, `i + 1`, and each sub-line's start) are
+    // non-decreasing, so each keeps its own monotone cursor.
+    let x_at = |i: usize, cursor: &mut usize| -> Pixels {
+        while *cursor < glyphs.len() && glyphs[*cursor].0 < i {
+            *cursor += 1;
+        }
+        glyphs.get(*cursor).map(|(_, x)| *x).unwrap_or(width)
+    };
+    let mut cur_cursor = 0usize;
+    let mut next_cursor = 0usize;
+    let mut sub_cursor = 0usize;
+
+    // The wrapped sub-line an index falls on — also non-decreasing.
+    let mut sub_ix = 0usize;
+    let mut sub_start_x = px(0.);
+
+    // The line's own bytes plus its trailing newline, which the layout places
+    // at the end of this line (the old whole-text loop tested it here too).
+    let scan_end = (line_start_ix + len + 1).min(text.len());
+    let Some(slice) = text.get(line_start_ix..scan_end) else {
+        return;
+    };
+
+    for (rel, c) in slice.char_indices() {
+        let i = rel.min(len);
+        while i > sub_ends[sub_ix] && sub_ix + 1 < sub_ends.len() {
+            let sub_start = sub_ends[sub_ix];
+            sub_ix += 1;
+            sub_start_x = x_at(sub_start, &mut sub_cursor);
+        }
+
+        let x = x_at(i, &mut cur_cursor) - sub_start_x;
+        let pos = point(
+            line_origin.x + x,
+            line_origin.y + layout_line_height * sub_ix as f32,
+        );
+
+        // `position_for_index(offset + 1)` only widened the character when it
+        // landed on the same rendered row (`next_pos.y == pos.y`); past a wrap
+        // boundary it starts a new row and the half-line-height default stood.
+        let char_width = if i + 1 <= sub_ends[sub_ix] {
+            x_at(i + 1, &mut next_cursor) - sub_start_x - x
+        } else {
+            line_height.half()
+        };
+
+        let char_center = point(pos.x + char_width.half(), pos.y + line_height.half());
+        if mask_bounds.contains(&char_center)
+            && point_in_text_selection(pos, char_width, selection_start, selection_end, line_height)
+        {
+            let offset = line_start_ix + rel;
+            if selection.is_none() {
+                *selection = Some((offset..offset).into());
+            }
+            if let Some(selection) = selection.as_mut() {
+                selection.end = offset + c.len_utf8();
+            }
         }
     }
 }

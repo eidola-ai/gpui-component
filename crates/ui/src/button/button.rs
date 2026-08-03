@@ -192,6 +192,7 @@ pub struct Button {
     disabled: bool,
     pub(crate) selected: bool,
     toggled: Option<bool>,
+    role: Option<Option<Role>>,
     variant: ButtonVariant,
     rounded: ButtonRounded,
     outline: bool,
@@ -235,6 +236,7 @@ impl Button {
             disabled: false,
             selected: false,
             toggled: None,
+            role: None,
             variant: ButtonVariant::default(),
             rounded: ButtonRounded::Medium,
             border_corners: Corners {
@@ -258,6 +260,16 @@ impl Button {
             tab_index: 0,
             tab_stop: true,
         }
+    }
+
+    /// Override the accessible role for the button, or pass `None` to make it
+    /// presentational — the button emits no AccessKit node of its own (the
+    /// HTML `role="none"` analog), for hosts that annotate a wrapping element
+    /// as the accessible control. If unset, the role is `Button`, or `Link`
+    /// for link-variant buttons.
+    pub fn role(mut self, role: impl Into<Option<Role>>) -> Self {
+        self.role = Some(role.into());
+        self
     }
 
     /// Set the outline style of the Button.
@@ -475,12 +487,15 @@ impl RenderOnce for Button {
             ButtonRounded::None => Pixels::ZERO,
         };
 
-        self.base
-            .role(if self.variant.is_link() {
+        let role = self.role.unwrap_or_else(|| {
+            Some(if self.variant.is_link() {
                 Role::Link
             } else {
                 Role::Button
             })
+        });
+        self.base
+            .when_some(role, |this, role| this.role(role))
             .when_some(self.label.as_ref(), |this, label| {
                 this.aria_label(label.clone())
             })

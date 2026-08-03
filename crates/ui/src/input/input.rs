@@ -51,7 +51,7 @@ pub struct Input {
     tab_index: isize,
     selected: bool,
     content_type: Option<InputContentType>,
-    role: Option<Role>,
+    role: Option<Option<Role>>,
 
     /// An optional context menu builder to allow a custom context menu on the input.
     ///
@@ -162,11 +162,13 @@ impl Input {
         self
     }
 
-    /// Override the accessible role for the input.
-    ///
-    /// If unset, the role is inferred from multi-line mode and content type.
-    pub fn role(mut self, role: Role) -> Self {
-        self.role = Some(role);
+    /// Override the accessible role for the input, or pass `None` to make it
+    /// presentational — the input emits no AccessKit node of its own (the
+    /// HTML `role="none"` analog), for hosts that annotate a wrapping element
+    /// as the accessible text field. If unset, the role is inferred from
+    /// multi-line mode and content type.
+    pub fn role(mut self, role: impl Into<Option<Role>>) -> Self {
+        self.role = Some(role.into());
         self
     }
 
@@ -228,17 +230,17 @@ impl Input {
     fn accessibility_role(
         is_multi_line: bool,
         content_type: Option<InputContentType>,
-        role: Option<Role>,
-    ) -> Role {
+        role: Option<Option<Role>>,
+    ) -> Option<Role> {
         if let Some(role) = role {
             return role;
         }
 
         if is_multi_line {
-            return Role::MultilineTextInput;
+            return Some(Role::MultilineTextInput);
         }
 
-        match content_type {
+        Some(match content_type {
             None => Role::TextInput,
             Some(InputContentType::TelephoneNumber) => Role::PhoneNumberInput,
             Some(InputContentType::EmailAddress) => Role::EmailInput,
@@ -286,7 +288,7 @@ impl Input {
                 | InputContentType::CellularEid
                 | InputContentType::CellularImei,
             ) => Role::TextInput,
-        }
+        })
     }
 
     fn exposes_accessibility_value(masked: bool, content_type: Option<InputContentType>) -> bool {
@@ -424,7 +426,7 @@ impl RenderOnce for Input {
 
         div()
             .id(("input", self.state.entity_id()))
-            .role(accessibility_role)
+            .when_some(accessibility_role, |this, role| this.role(role))
             .when_some(accessibility_value, |this, value| this.aria_value(value))
             .flex()
             .key_context(crate::input::CONTEXT)
@@ -661,7 +663,10 @@ mod tests {
         ];
 
         for (content_type, role) in cases {
-            assert_eq!(Input::accessibility_role(false, content_type, None), role);
+            assert_eq!(
+                Input::accessibility_role(false, content_type, None),
+                Some(role)
+            );
         }
     }
 
@@ -669,7 +674,7 @@ mod tests {
     fn multiline_inputs_keep_multiline_accessibility_role() {
         assert_eq!(
             Input::accessibility_role(true, Some(InputContentType::Password), None),
-            Role::MultilineTextInput
+            Some(Role::MultilineTextInput)
         );
     }
 
@@ -679,18 +684,27 @@ mod tests {
             Input::accessibility_role(
                 false,
                 Some(InputContentType::Password),
-                Some(Role::TextInput)
+                Some(Some(Role::TextInput))
             ),
-            Role::TextInput
+            Some(Role::TextInput)
         );
         assert_eq!(
             Input::accessibility_role(
                 true,
                 Some(InputContentType::Password),
-                Some(Role::TextInput)
+                Some(Some(Role::TextInput))
             ),
-            Role::TextInput
+            Some(Role::TextInput)
         );
+    }
+
+    #[test]
+    fn role_none_makes_the_input_presentational() {
+        assert_eq!(
+            Input::accessibility_role(false, Some(InputContentType::Password), Some(None)),
+            None
+        );
+        assert_eq!(Input::accessibility_role(true, None, Some(None)), None);
     }
 
     #[gpui::test]

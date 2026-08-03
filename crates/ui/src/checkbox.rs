@@ -25,6 +25,7 @@ pub struct Checkbox {
     tab_index: isize,
     on_click: Option<Rc<dyn Fn(&bool, &mut Window, &mut App) + 'static>>,
     tooltip: ComponentTooltip,
+    role: Option<Option<Role>>,
 }
 
 impl Checkbox {
@@ -43,7 +44,17 @@ impl Checkbox {
             tab_stop: true,
             tab_index: 0,
             tooltip: ComponentTooltip::default(),
+            role: None,
         }
+    }
+
+    /// Override the accessible role for the checkbox, or pass `None` to make
+    /// it presentational — the checkbox emits no AccessKit node of its own
+    /// (the HTML `role="none"` analog), for hosts that annotate a wrapping
+    /// element as the accessible control. If unset, the role is `CheckBox`.
+    pub fn role(mut self, role: impl Into<Option<Role>>) -> Self {
+        self.role = Some(role.into());
+        self
     }
 
     /// Set tooltip text for the checkbox.
@@ -219,9 +230,10 @@ impl RenderOnce for Checkbox {
         };
         let radius = cx.theme().radius.min(px(4.));
 
+        let role = self.role.unwrap_or(Some(Role::CheckBox));
         self.base
             .id(self.id.clone())
-            .role(Role::CheckBox)
+            .when_some(role, |this, role| this.role(role))
             .aria_toggled(if checked {
                 Toggled::True
             } else {

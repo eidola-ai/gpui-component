@@ -51,6 +51,7 @@ pub struct Input {
     selected: bool,
     content_type: Option<InputContentType>,
     role: Option<Role>,
+    a11y_labelled_by_ancestor: bool,
 
     /// An optional context menu builder to allow a custom context menu on the input.
     ///
@@ -96,8 +97,20 @@ impl Input {
             selected: false,
             content_type: None,
             role: None,
+            a11y_labelled_by_ancestor: false,
             context_menu_builder: None,
         }
+    }
+
+    /// Skip this input's own AccessKit role, for hosts that annotate a
+    /// wrapping element as the accessible text field. Without this, a
+    /// role-bearing wrapper and the input both emit nodes — and since `Input`
+    /// sets no label of its own, the real field is the unlabelled one.
+    /// Removal trigger: a gpui aria-hidden mechanism, or an `Input` label API
+    /// plus hosts moving annotations onto the widget itself.
+    pub fn a11y_labelled_by_ancestor(mut self) -> Self {
+        self.a11y_labelled_by_ancestor = true;
+        self
     }
 
     pub fn prefix(mut self, prefix: impl IntoElement) -> Self {
@@ -395,7 +408,9 @@ impl RenderOnce for Input {
 
         div()
             .id(("input", self.state.entity_id()))
-            .role(accessibility_role)
+            .when(!self.a11y_labelled_by_ancestor, |this| {
+                this.role(accessibility_role)
+            })
             .flex()
             .key_context(crate::input::CONTEXT)
             .track_focus(&state.focus_handle.clone())

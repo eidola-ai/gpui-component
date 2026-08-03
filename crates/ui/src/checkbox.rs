@@ -25,6 +25,7 @@ pub struct Checkbox {
     tab_index: isize,
     on_click: Option<Rc<dyn Fn(&bool, &mut Window, &mut App) + 'static>>,
     tooltip: ComponentTooltip,
+    a11y_labelled_by_ancestor: bool,
 }
 
 impl Checkbox {
@@ -43,7 +44,18 @@ impl Checkbox {
             tab_stop: true,
             tab_index: 0,
             tooltip: ComponentTooltip::default(),
+            a11y_labelled_by_ancestor: false,
         }
+    }
+
+    /// Skip this checkbox's own AccessKit role, label, and toggle state, for
+    /// hosts that annotate a wrapping element as the accessible control.
+    /// Without this, a role-bearing wrapper and the checkbox both emit nodes —
+    /// a duplicate control to assistive technology. Removal trigger: a gpui
+    /// aria-hidden mechanism, or hosts moving annotations onto the widget.
+    pub fn a11y_labelled_by_ancestor(mut self) -> Self {
+        self.a11y_labelled_by_ancestor = true;
+        self
     }
 
     /// Set tooltip text for the checkbox.
@@ -219,18 +231,21 @@ impl RenderOnce for Checkbox {
         };
         let radius = cx.theme().radius.min(px(4.));
 
+        let a11y_labelled_by_ancestor = self.a11y_labelled_by_ancestor;
         self.base
             .id(self.id.clone())
-            .role(Role::CheckBox)
-            .aria_toggled(if checked {
-                Toggled::True
-            } else {
-                Toggled::False
+            .when(!a11y_labelled_by_ancestor, |this| {
+                this.role(Role::CheckBox)
+                    .aria_toggled(if checked {
+                        Toggled::True
+                    } else {
+                        Toggled::False
+                    })
+                    .when_some(
+                        self.label.as_ref().map(|l| l.get_text(cx)),
+                        |this, label| this.aria_label(label),
+                    )
             })
-            .when_some(
-                self.label.as_ref().map(|l| l.get_text(cx)),
-                |this, label| this.aria_label(label),
-            )
             .when(!self.disabled, |this| {
                 this.track_focus(
                     &focus_handle

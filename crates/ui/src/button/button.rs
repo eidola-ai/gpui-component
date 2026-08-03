@@ -211,6 +211,7 @@ pub struct Button {
 
     tab_index: isize,
     tab_stop: bool,
+    a11y_labelled_by_ancestor: bool,
 }
 
 impl From<Button> for AnyElement {
@@ -255,7 +256,18 @@ impl Button {
             dropdown_caret: false,
             tab_index: 0,
             tab_stop: true,
+            a11y_labelled_by_ancestor: false,
         }
+    }
+
+    /// Skip this button's own AccessKit role and label, for hosts that
+    /// annotate a wrapping element as the accessible control. Without this, a
+    /// role-bearing wrapper and the button both emit nodes — a duplicate
+    /// control to assistive technology. Removal trigger: a gpui aria-hidden
+    /// mechanism, or hosts moving annotations onto the widget itself.
+    pub fn a11y_labelled_by_ancestor(mut self) -> Self {
+        self.a11y_labelled_by_ancestor = true;
+        self
     }
 
     /// Set the outline style of the Button.
@@ -462,16 +474,19 @@ impl RenderOnce for Button {
             ButtonRounded::None => Pixels::ZERO,
         };
 
+        let a11y_labelled_by_ancestor = self.a11y_labelled_by_ancestor;
         self.base
-            .role(if self.variant.is_link() {
-                Role::Link
-            } else {
-                Role::Button
+            .when(!a11y_labelled_by_ancestor, |this| {
+                this.role(if self.variant.is_link() {
+                    Role::Link
+                } else {
+                    Role::Button
+                })
+                .when_some(self.label.as_ref(), |this, label| {
+                    this.aria_label(label.clone())
+                })
+                .aria_selected(self.selected)
             })
-            .when_some(self.label.as_ref(), |this, label| {
-                this.aria_label(label.clone())
-            })
-            .aria_selected(self.selected)
             .when(!self.disabled, |this| {
                 this.track_focus(
                     &focus_handle

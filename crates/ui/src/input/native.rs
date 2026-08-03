@@ -48,7 +48,16 @@ mod macos {
     }
 
     fn ns_view(window: &Window) -> Option<&AnyObject> {
-        let handle = HasWindowHandle::window_handle(window).ok()?;
+        // gpui's TestWindow implements HasWindowHandle::window_handle as
+        // unimplemented!() — a panic, not an Err, so `.ok()?` alone cannot
+        // skip it. Catch the unwind so a window without a real platform
+        // backing simply opts out. Removal trigger: TestWindow returning
+        // Err(HandleError::Unavailable) upstream.
+        let handle = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            HasWindowHandle::window_handle(window)
+        }))
+        .ok()?
+        .ok()?;
         let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
             return None;
         };

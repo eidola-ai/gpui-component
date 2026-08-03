@@ -40,7 +40,18 @@ extern "C" fn hit_test_forwarder(this: &NSWindow, _cmd: Sel, point: NSPoint) -> 
 }
 
 fn ns_view(window: &Window) -> Option<&NSView> {
-    let handle = HasWindowHandle::window_handle(window).ok()?;
+    // gpui's TestWindow implements HasWindowHandle::window_handle as
+    // unimplemented!() — a panic, not an Err, so `.ok()?` alone cannot skip
+    // it. Downstream test suites compile this crate without cfg(test), so the
+    // cfg guard at the Root::new call site does not protect them. Catch the
+    // unwind so a window without a real platform backing simply opts out of
+    // the forwarder. Removal trigger: TestWindow returning
+    // Err(HandleError::Unavailable) upstream.
+    let handle = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        HasWindowHandle::window_handle(window)
+    }))
+    .ok()?
+    .ok()?;
     let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
         return None;
     };

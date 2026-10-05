@@ -1,9 +1,9 @@
 // From:
 // https://github.com/zed-industries/zed/blob/56daba28d40301ee4c05546fadb691d070b7b2b6/crates/gpui/examples/window_shadow.rs
 use gpui::{
-    AnyElement, App, Corners, CursorStyle, Decorations, Edges, Hsla, InteractiveElement as _,
-    IntoElement, MouseButton, ParentElement, Pixels, Point, RenderOnce, ResizeEdge, Size,
-    Styled as _, Tiling, Window, div, point, prelude::FluentBuilder as _, px,
+    AnyElement, App, Corners, CursorStyle, Decorations, Edges, Global, Hsla,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement, Pixels, Point, RenderOnce,
+    ResizeEdge, Size, Styled as _, Tiling, Window, div, point, prelude::FluentBuilder as _, px,
 };
 
 use crate::ActiveTheme;
@@ -40,6 +40,31 @@ fn corner_radii(radius: Pixels, decorations: Decorations) -> Corners<Pixels> {
         bottom_left: corner(!tiling.bottom && !tiling.left),
         bottom_right: corner(!tiling.bottom && !tiling.right),
     }
+}
+
+struct WindowBorderDisabled;
+impl Global for WindowBorderDisabled {}
+
+/// Set whether [`Root`](crate::Root) wraps each window's content in a [`WindowBorder`].
+///
+/// Enabled by default. Disable it when the application draws its own client-side
+/// decorations: the root then leaves the window's shadow padding, client inset and
+/// resize handling to the application. Takes effect on the next render of each window.
+pub fn set_window_border_enabled(enabled: bool, cx: &mut App) {
+    if enabled {
+        if cx.has_global::<WindowBorderDisabled>() {
+            cx.remove_global::<WindowBorderDisabled>();
+        }
+    } else {
+        cx.set_global(WindowBorderDisabled);
+    }
+}
+
+/// Whether [`Root`](crate::Root) wraps each window's content in a [`WindowBorder`].
+///
+/// See [`set_window_border_enabled`].
+pub fn window_border_enabled(cx: &App) -> bool {
+    !cx.has_global::<WindowBorderDisabled>()
 }
 
 /// Create a new window border.
@@ -359,6 +384,21 @@ mod tests {
     }
 
     use super::*;
+
+    #[gpui::test]
+    fn window_border_can_be_disabled_and_restored(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            assert!(window_border_enabled(cx));
+            set_window_border_enabled(false, cx);
+            assert!(!window_border_enabled(cx));
+            set_window_border_enabled(false, cx);
+            assert!(!window_border_enabled(cx));
+            set_window_border_enabled(true, cx);
+            assert!(window_border_enabled(cx));
+            set_window_border_enabled(true, cx);
+            assert!(window_border_enabled(cx));
+        });
+    }
 
     #[test]
     fn only_client_decorated_windows_use_the_client_border() {

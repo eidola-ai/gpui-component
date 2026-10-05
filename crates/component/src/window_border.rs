@@ -1,9 +1,9 @@
 // From:
 // https://github.com/zed-industries/zed/blob/56daba28d40301ee4c05546fadb691d070b7b2b6/crates/gpui/examples/window_shadow.rs
 use gpui::{
-    AnyElement, App, CursorStyle, Decorations, Edges, Hsla, InteractiveElement as _, IntoElement,
-    MouseButton, ParentElement, Pixels, Point, RenderOnce, ResizeEdge, Size, Styled as _, Tiling,
-    Window, div, point, prelude::FluentBuilder as _, px,
+    AnyElement, App, CursorStyle, Decorations, Edges, Global, Hsla, InteractiveElement as _,
+    IntoElement, MouseButton, ParentElement, Pixels, Point, RenderOnce, ResizeEdge, Size,
+    Styled as _, Tiling, Window, div, point, prelude::FluentBuilder as _, px,
 };
 
 use crate::ActiveTheme;
@@ -20,6 +20,31 @@ const RESIZE_HIT_SIZE: Pixels = px(4.0);
 /// radius here would round the frame itself but leave child backgrounds visible in the
 /// corners, so keep the generic window wrapper square until rounded content masks exist.
 pub(crate) const BORDER_RADIUS: Pixels = px(0.0);
+
+struct WindowBorderDisabled;
+impl Global for WindowBorderDisabled {}
+
+/// Set whether [`Root`](crate::Root) wraps each window's content in a [`WindowBorder`].
+///
+/// Enabled by default. Disable it when the application draws its own client-side
+/// decorations: the root then leaves the window's shadow padding, client inset and
+/// resize handling to the application. Takes effect on the next render of each window.
+pub fn set_window_border_enabled(enabled: bool, cx: &mut App) {
+    if enabled {
+        if cx.has_global::<WindowBorderDisabled>() {
+            cx.remove_global::<WindowBorderDisabled>();
+        }
+    } else {
+        cx.set_global(WindowBorderDisabled);
+    }
+}
+
+/// Whether [`Root`](crate::Root) wraps each window's content in a [`WindowBorder`].
+///
+/// See [`set_window_border_enabled`].
+pub fn window_border_enabled(cx: &App) -> bool {
+    !cx.has_global::<WindowBorderDisabled>()
+}
 
 /// Create a new window border.
 pub fn window_border() -> WindowBorder {
@@ -290,6 +315,21 @@ fn cursor_style_for_resize_edge(edge: ResizeEdge) -> CursorStyle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn window_border_can_be_disabled_and_restored(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            assert!(window_border_enabled(cx));
+            set_window_border_enabled(false, cx);
+            assert!(!window_border_enabled(cx));
+            set_window_border_enabled(false, cx);
+            assert!(!window_border_enabled(cx));
+            set_window_border_enabled(true, cx);
+            assert!(window_border_enabled(cx));
+            set_window_border_enabled(true, cx);
+            assert!(window_border_enabled(cx));
+        });
+    }
 
     #[test]
     fn only_client_decorated_windows_use_the_client_border() {

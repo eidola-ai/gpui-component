@@ -452,9 +452,13 @@ impl gpui_base::RootPlugin for WindowState {
         surface: gpui::AnyElement,
         _root: &gpui_base::Root,
         _window: &mut Window,
-        _cx: &mut App,
+        cx: &mut App,
     ) -> impl IntoElement {
-        window_border().child(surface)
+        if crate::window_border_enabled(cx) {
+            window_border().child(surface).into_any_element()
+        } else {
+            surface
+        }
     }
 }
 
